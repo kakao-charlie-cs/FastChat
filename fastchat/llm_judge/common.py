@@ -12,6 +12,7 @@ import time
 from typing import Optional
 
 import openai
+from openai import AzureOpenAI
 import anthropic
 
 from fastchat.model.model_adapter import (
@@ -405,63 +406,81 @@ def play_a_match_pair(match: MatchPair, output_file: str):
 
 
 def chat_completion_openai(model, conv, temperature, max_tokens, api_dict=None):
-    if api_dict is not None:
-        openai.api_base = api_dict["api_base"]
-        openai.api_key = api_dict["api_key"]
+    if api_dict:
+        client = openai.OpenAI(
+            base_url=api_dict["api_base"],
+            api_key=api_dict["api_key"],
+        )
+    else:
+        client = openai.OpenAI()
     output = API_ERROR_OUTPUT
     for _ in range(API_MAX_RETRY):
         try:
             messages = conv.to_openai_api_messages()
-            response = openai.ChatCompletion.create(
+            completion = client.chat.completions.create(
                 model=model,
                 messages=messages,
-                n=1,
                 temperature=temperature,
                 max_tokens=max_tokens,
-            )
-            output = response["choices"][0]["message"]["content"]
+                )
+            output = completion.choices[0].message.content
             break
-        except openai.error.OpenAIError as e:
+        except openai.RateLimitError as e:
             print(type(e), e)
             time.sleep(API_RETRY_SLEEP)
+        except openai.BadRequestError as e:
+            print(messages)
+            print(type(e), e)
+        except KeyError:
+            print(type(e), e)
+            break
 
     return output
 
 
 def chat_completion_openai_azure(model, conv, temperature, max_tokens, api_dict=None):
-    openai.api_type = "azure"
-    openai.api_version = "2023-07-01-preview"
+    api_version = "2023-07-01-preview"
     if api_dict is not None:
-        openai.api_base = api_dict["api_base"]
-        openai.api_key = api_dict["api_key"]
+        api_base = api_dict["api_base"]
+        api_key = api_dict["api_key"]
     else:
-        openai.api_base = os.environ["AZURE_OPENAI_ENDPOINT"]
-        openai.api_key = os.environ["AZURE_OPENAI_KEY"]
-
+        api_base = os.environ["AZURE_OPENAI_ENDPOINT"]
+        api_key = os.environ["AZURE_OPENAI_KEY"]
+        
     if "azure-" in model:
         model = model[6:]
+    
+    client = AzureOpenAI(
+        azure_endpoint = api_base,
+        api_version=api_version,
+        api_key=api_key,
+        api_version=api_version,
+        timeout=240,
+        max_retries=2
+    )
 
     output = API_ERROR_OUTPUT
     for _ in range(API_MAX_RETRY):
         try:
             messages = conv.to_openai_api_messages()
-            response = openai.ChatCompletion.create(
-                engine=model,
+            response = client.chat.completions.create(
+                model=model,
                 messages=messages,
                 n=1,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                seed=42,
             )
-            output = response["choices"][0]["message"]["content"]
+            output = response.choices[0].message.content
             break
-        except openai.error.OpenAIError as e:
+        except openai.RateLimitError as e:
             print(type(e), e)
             time.sleep(API_RETRY_SLEEP)
-        except openai.error.InvalidRequestError as e:
+        except openai.BadRequestError as e:
             print(type(e), e)
             break
         except KeyError:
-            print(response)
+            print(type(e), e)
             break
 
     return output
